@@ -141,11 +141,7 @@ macro_rules! gpio_macro {
                     {
                         let p = unsafe { &*device::Gpio::ptr() };
                         p.$ctrl_reg().modify(|r, w| unsafe {
-                            w.data_reg(if ODM::ACTIVE_HIGH {
-                                true
-                            } else {
-                                false
-                            })
+                            w.data_reg().bit(ODM::ACTIVE_HIGH)
                         });
                         // Start released in the inactive state.
                         p.$ctrl_reg().modify(|r, w| unsafe {
@@ -206,7 +202,7 @@ macro_rules! gpio_macro {
                     fn is_set_high(&mut self) -> Result<bool, Self::Error> {
                         let p = unsafe { &*device::Gpio::ptr() };
                         let is_output =
-                            (p.$ctrl_reg().read().direction_reg().bit()) != 0;
+                            p.$ctrl_reg().read().direction_reg().bit();
                         Ok(is_output == ODM::ACTIVE_HIGH)
                     }
 
@@ -251,7 +247,7 @@ macro_rules! gpio_macro {
                     fn is_high(&mut self) -> Result<bool, Self::Error> {
                         let p = unsafe { &*device::Gpio::ptr() };
                         Ok(
-                            (p.$ctrl_reg().read().input_data_reg().bit() != 0),
+                            p.$ctrl_reg().read().input_data_reg().bit(),
                         )
                     }
 
@@ -267,39 +263,22 @@ macro_rules! gpio_macro {
                     /// Enable or disable interrupts on this pin.
                     pub fn set_interrupt_mode(&mut self, mode: InterruptMode) {
                         let p = unsafe { &*device::Gpio::ptr() };
-                        match mode {
-                            InterruptMode::LevelHigh => {
-                                p.$ctrl_reg().write().intsensitivity_type0sel().set_bit();
-                                p.$ctrl_reg().write().intsensitivity_type1sel().set_bit();
-                                p.$ctrl_reg().write().intsensitivity_type2sel().clear_bit();
-                                p.$ctrl_reg().write().intenbl().set_bit();
-                            }
-                            InterruptMode::LevelLow => {
-                                p.$ctrl_reg().write().intsensitivity_type0sel().clear_bit();
-                                p.$ctrl_reg().write().intsensitivity_type1sel().set_bit();
-                                p.$ctrl_reg().write().intsensitivity_type2sel().clear_bit();
-                                p.$ctrl_reg().write().intenbl().set_bit();
-                            }
-                            InterruptMode::EdgeRising => {
-                                p.$ctrl_reg().write().intsensitivity_type0sel().set_bit();
-                                p.$ctrl_reg().write().intsensitivity_type1sel().clear_bit();
-                                p.$ctrl_reg().write().intsensitivity_type2sel().clear_bit();
-                                p.$ctrl_reg().write().intenbl().set_bit();
-                            }
-                            InterruptMode::EdgeFalling => {
-                                p.$ctrl_reg().write().intsensitivity_type0sel().clear_bit();
-                                p.$ctrl_reg().write().intsensitivity_type1sel().clear_bit();
-                                p.$ctrl_reg().write().intsensitivity_type2sel().clear_bit();
-                                p.$ctrl_reg().write().intenbl().set_bit();
-                            }
-                            InterruptMode::EdgeBoth => {
-                                p.$ctrl_reg().write().intsensitivity_type2sel().set_bit();
-                                p.$ctrl_reg().write().intenbl().set_bit();
-                            }
-                            InterruptMode::Disabled => {
-                                p.$ctrl_reg().write().intenbl().clear_bit();
-                            }
-                        }
+                        p.$ctrl_reg().modify(|_, w| {
+                            // Preserve pending interrupt status during configuration.
+                            w.intsts_reg().clear_bit();
+                            let (type0, type1, type2) = match mode {
+                                InterruptMode::LevelHigh => (true, true, false),
+                                InterruptMode::LevelLow => (false, true, false),
+                                InterruptMode::EdgeRising => (true, false, false),
+                                InterruptMode::EdgeFalling => (false, false, false),
+                                InterruptMode::EdgeBoth => (false, false, true),
+                                InterruptMode::Disabled => return w.intenbl().clear_bit(),
+                            };
+                            w.intsensitivity_type0sel().bit(type0);
+                            w.intsensitivity_type1sel().bit(type1);
+                            w.intsensitivity_type2sel().bit(type2);
+                            w.intenbl().set_bit()
+                        });
                     }
 
                     /// Returns the current interrupt-pending status for this pin.
@@ -307,39 +286,25 @@ macro_rules! gpio_macro {
                     pub fn get_interrupt_status(&self) -> bool {
                         let p = unsafe { &*device::Gpio::ptr() };
 
-                        (p.$ctrl_reg().read().intsts_reg().bit()
-                            == 1)
+                        p.$ctrl_reg().read().intsts_reg().bit()
                     }
 
                     /// Clear the pending interrupt for this pin.
                     pub fn clear_interrupt(&self) {
                         let p = unsafe { &*device::Gpio::ptr() };
                         
-                        p.$ctrl_reg().write().intsts_reg().set_bit();
-                    }
-
-                    /// Set the command-source bits for this pin.
-                    pub fn set_cmd_src(&self, cmd_src0: u32, cmd_src1: u32) {
-                        let p = unsafe { &*device::Gpio::ptr() };
-                        p.$cmd_src0_reg().modify(|r, w| unsafe {
-                            w.bits(
-                                (r.bits() & !(1u32 << ($pos + $i)))
-                                    | (cmd_src0 << ($pos + $i)),
-                            )
-                        });
-                        p.$cmd_src1_reg().modify(|r, w| unsafe {
-                            w.bits(
-                                (r.bits() & !(1u32 << ($pos + $i)))
-                                    | (cmd_src1 << ($pos + $i)),
-                            )
-                        });
+                        p.$ctrl_reg().modify(|_, w| w.intsts_reg().set_bit());
                     }
 
                     /// Select the debounce timer for this pin.
-                    pub fn select_debounce_timer(&self, deb_setting1: u32, deb_setting2: u32) {
+                    pub fn select_debounce_timer(&self, deb_setting1: bool, deb_setting2: bool) {
                         let p = unsafe { &*device::Gpio::ptr() };
-                        p.$ctrl_reg().write().deb1_reg().bit(deb_setting1 != 0);
-                        p.$ctrl_reg().write().deb2_reg().bit(deb_setting2 != 0);
+                        p.$ctrl_reg().modify(|_, w| {
+                            w.debounce_setting_reg1().bit(deb_setting1);
+                            w.debounce_setting_reg2().bit(deb_setting2);
+                            // Do not acknowledge a pending interrupt during configuration.
+                            w.intsts_reg().clear_bit()
+                        });
                     }
                 }
 

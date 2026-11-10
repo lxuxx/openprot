@@ -9,7 +9,7 @@ def _ast1080_pac_impl(module_ctx):
     git_repository(
         name = "ast1080_pac",
         remote = "https://github.com/AspeedTech-BMC/ast1080-pac.git",
-        commit = "e69646350240d6c28a5700f983d03767c86cc986",
+        commit = "823e92760a0fcb830de84527b5b00f3cfbf5c127",
         build_file = "@@//third_party:ast1080_pac.BUILD.bazel",
     )
     return module_ctx.extension_metadata(

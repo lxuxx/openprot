@@ -6,7 +6,7 @@
 use ast1080_pac as device;
 use core::marker::PhantomData;
 
-/// Safe wrapper around the AST1060 GPIO register block.
+/// Safe wrapper around the AST1080 GPIO register block.
 pub struct GpioRegisters {
     base: *const device::gpio::RegisterBlock,
     /// Prevent `Send` and `Sync`.
@@ -22,7 +22,7 @@ impl GpioRegisters {
     ///
     /// # Safety
     ///
-    /// - `base` must be a valid, non-null pointer to the AST1060 GPIO register block.
+    /// - `base` must be a valid, non-null pointer to the AST1080 GPIO register block.
     /// - The block must remain valid for the lifetime of this value.
     /// - Caller must enforce exclusive (or otherwise coordinated) access to the
     ///   register block for the duration of use.
