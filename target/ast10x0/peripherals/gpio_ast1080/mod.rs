@@ -71,7 +71,9 @@ macro_rules! gpio_macro {
                 pub fn gpio_blink_src_clk_div(&self, div: u32) {
                     let p = self._regs.regs();
 
-                    p.gpio00c().write(|w| unsafe { w.bits(div) });
+                    p.gpio00c().write(|w| unsafe {
+                        w.blink_source_clk_division_only_effective_to_pclkas_src_clk().bits(div)
+                    });
                 }
 
                 pub fn gpio_blink_ctrl(&self, ctrl: u32) {
@@ -112,10 +114,9 @@ macro_rules! gpio_macro {
                     pub fn into_pull_down_input(self) -> $PXi<Input<PullDown>> {
                         let p = unsafe { &*device::Gpio::ptr() };
                         p.$ctrl_reg().modify(|_, w| unsafe {
-                            w.direction_reg().set_bit()
-                        });
-                        p.$ctrl_reg().modify(|_, w| unsafe {
-                            w.data_reg().clear_bit()
+                            w.direction_reg().clear_bit();
+                            w.data_reg().clear_bit();
+                            w.intsts_reg().clear_bit()
                         });
                         $PXi { _mode: PhantomData }
                     }
@@ -125,10 +126,9 @@ macro_rules! gpio_macro {
                     pub fn into_pull_up_input(self) -> $PXi<Input<PullUp>> {
                         let p = unsafe { &*device::Gpio::ptr() };
                         p.$ctrl_reg().modify(|_, w| unsafe {
-                            w.direction_reg().set_bit()
-                        });
-                        p.$ctrl_reg().modify(|_, w| unsafe {
-                            w.data_reg().set_bit()
+                            w.direction_reg().clear_bit();
+                            w.data_reg().set_bit();
+                            w.intsts_reg().clear_bit()
                         });
                         $PXi { _mode: PhantomData }
                     }
@@ -141,11 +141,9 @@ macro_rules! gpio_macro {
                     {
                         let p = unsafe { &*device::Gpio::ptr() };
                         p.$ctrl_reg().modify(|r, w| unsafe {
-                            w.data_reg().bit(ODM::ACTIVE_HIGH)
-                        });
-                        // Start released in the inactive state.
-                        p.$ctrl_reg().modify(|r, w| unsafe {
-                            w.direction_reg().clear_bit()
+                            w.data_reg().bit(ODM::ACTIVE_HIGH);
+                            w.direction_reg().clear_bit();
+                            w.intsts_reg().clear_bit()
                         });
                         $PXi { _mode: PhantomData }
                     }
@@ -155,10 +153,9 @@ macro_rules! gpio_macro {
                     pub fn into_push_pull_output(self) -> $PXi<Output<PushPull>> {
                         let p = unsafe { &*device::Gpio::ptr() };
                         p.$ctrl_reg().modify(|_, w| unsafe {
-                            w.direction_reg().set_bit()
-                        });
-                        p.$ctrl_reg().modify(|r, w| unsafe {
-                            w.data_reg().set_bit()
+                            w.data_reg().set_bit();
+                            w.direction_reg().set_bit();
+                            w.intsts_reg().clear_bit()
                         });
                         $PXi { _mode: PhantomData }
                     }
@@ -181,7 +178,8 @@ macro_rules! gpio_macro {
                     fn set_high(&mut self) -> Result<(), Self::Error> {
                         let p = unsafe { &*device::Gpio::ptr() };
                         p.$ctrl_reg().modify(|_, w| unsafe {
-                            w.data_reg().set_bit()
+                            w.data_reg().set_bit();
+                            w.intsts_reg().clear_bit()
                         });
                         Ok(())
                     }
@@ -189,7 +187,8 @@ macro_rules! gpio_macro {
                     fn set_low(&mut self) -> Result<(), Self::Error> {
                         let p = unsafe { &*device::Gpio::ptr() };
                         p.$ctrl_reg().modify(|_, w| unsafe {
-                            w.data_reg().clear_bit()
+                            w.data_reg().clear_bit();
+                            w.intsts_reg().clear_bit()
                         });
                         Ok(())
                     }
@@ -218,11 +217,8 @@ macro_rules! gpio_macro {
                     fn set_high(&mut self) -> Result<(), Self::Error> {
                         let p = unsafe { &*device::Gpio::ptr() };
                         p.$ctrl_reg().modify(|r, w| unsafe {
-                            if ODM::ACTIVE_HIGH {
-                                w.direction_reg().set_bit()
-                            } else {
-                                w.direction_reg().clear_bit()
-                            }
+                            w.direction_reg().bit(ODM::ACTIVE_HIGH);
+                            w.intsts_reg().clear_bit()
                         });
                         Ok(())
                     }
@@ -230,11 +226,8 @@ macro_rules! gpio_macro {
                     fn set_low(&mut self) -> Result<(), Self::Error> {
                         let p = unsafe { &*device::Gpio::ptr() };
                         p.$ctrl_reg().modify(|r, w| unsafe {
-                            if ODM::ACTIVE_HIGH {
-                                w.direction_reg().clear_bit()
-                            } else {
-                                w.direction_reg().set_bit()
-                            }
+                            w.direction_reg().bit(!ODM::ACTIVE_HIGH);
+                            w.intsts_reg().clear_bit()
                         });
                         Ok(())
                     }
