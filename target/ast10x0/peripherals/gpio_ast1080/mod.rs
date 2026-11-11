@@ -3,13 +3,15 @@
 
 //! AST10x0 GPIO peripheral driver.
 //!
-//! Each GPIO bank (A–U) is exposed as a sub-module (`gpioa`, `gpiob`, …).
+//! Banks A through X (8 pins each) and Y (2 pins) are exposed as sub-modules.
 //! Obtain a bank via `GPIOX::new_global()` (unsafe), then call `split()` to
 //! get the individual typed pins.
 
+mod controller;
 mod registers;
 mod types;
 
+pub use controller::GpioController;
 pub use registers::GpioRegisters;
 pub use types::{
     ActiveHigh, ActiveLow, Floating, GpioError, GpioExt, Input, InputMode, InterruptMode,
@@ -56,31 +58,11 @@ macro_rules! gpio_macro {
 
                 /// Initialize command-source and debounce registers for this bank.
                 pub fn init(&self) {
-                    let p = self._regs.regs();
+                    let _p = self._regs.regs();
                     
                 }
 
-                pub fn set_debounce_timer(&self, timer1: u32, timer2: u32, timer3: u32) {
-                    let p = self._regs.regs();
 
-                    p.gpio000().write(|w| unsafe { w.bits(timer1) });
-                    p.gpio004().write(|w| unsafe { w.bits(timer2) });
-                    p.gpio008().write(|w| unsafe { w.bits(timer3) });
-                }
-
-                pub fn gpio_blink_src_clk_div(&self, div: u32) {
-                    let p = self._regs.regs();
-
-                    p.gpio00c().write(|w| unsafe {
-                        w.blink_source_clk_division_only_effective_to_pclkas_src_clk().bits(div)
-                    });
-                }
-
-                pub fn gpio_blink_ctrl(&self, ctrl: u32) {
-                    let p = self._regs.regs();
-
-                    p.gpio010().write(|w| unsafe { w.bits(ctrl) });
-                }
             }
 
             pub struct Parts {
@@ -113,8 +95,9 @@ macro_rules! gpio_macro {
                     #[must_use]
                     pub fn into_pull_down_input(self) -> $PXi<Input<PullDown>> {
                         let p = unsafe { &*device::Gpio::ptr() };
-                        p.$ctrl_reg().modify(|_, w| unsafe {
+                        p.$ctrl_reg().modify(|_, w| {
                             w.direction_reg().clear_bit();
+                            w.input_mask().clear_bit();
                             w.data_reg().clear_bit();
                             w.intsts_reg().clear_bit()
                         });
@@ -125,8 +108,9 @@ macro_rules! gpio_macro {
                     #[must_use]
                     pub fn into_pull_up_input(self) -> $PXi<Input<PullUp>> {
                         let p = unsafe { &*device::Gpio::ptr() };
-                        p.$ctrl_reg().modify(|_, w| unsafe {
+                        p.$ctrl_reg().modify(|_, w| {
                             w.direction_reg().clear_bit();
+                            w.input_mask().clear_bit();
                             w.data_reg().set_bit();
                             w.intsts_reg().clear_bit()
                         });
@@ -140,9 +124,11 @@ macro_rules! gpio_macro {
                         ODM: OpenDrainMode,
                     {
                         let p = unsafe { &*device::Gpio::ptr() };
-                        p.$ctrl_reg().modify(|r, w| unsafe {
+                        p.$ctrl_reg().modify(|_, w| {
                             w.data_reg().bit(ODM::ACTIVE_HIGH);
                             w.direction_reg().clear_bit();
+                            w.blink_counter_sel1().clear_bit();
+                            w.blink_counter_sel2().clear_bit();
                             w.intsts_reg().clear_bit()
                         });
                         $PXi { _mode: PhantomData }
@@ -152,12 +138,28 @@ macro_rules! gpio_macro {
                     #[must_use]
                     pub fn into_push_pull_output(self) -> $PXi<Output<PushPull>> {
                         let p = unsafe { &*device::Gpio::ptr() };
-                        p.$ctrl_reg().modify(|_, w| unsafe {
+                        p.$ctrl_reg().modify(|_, w| {
                             w.data_reg().set_bit();
                             w.direction_reg().set_bit();
+                            w.input_mask().clear_bit();
+                            w.blink_counter_sel1().clear_bit();
+                            w.blink_counter_sel2().clear_bit();
                             w.intsts_reg().clear_bit()
                         });
                         $PXi { _mode: PhantomData }
+                    }
+                }
+
+                impl $PXi<Output<PushPull>> {
+                    /// Select the blink counter for this pin.
+                    pub fn select_blink_counter(&self, blink_counter1: bool, blink_counter2: bool) {
+                        let p = unsafe { &*device::Gpio::ptr() };
+                        p.$ctrl_reg().modify(|_, w| {
+                            w.blink_counter_sel1().bit(blink_counter1);
+                            w.blink_counter_sel2().bit(blink_counter2);
+                            // Do not acknowledge a pending interrupt during configuration.
+                            w.intsts_reg().clear_bit()
+                        });
                     }
                 }
 
@@ -177,7 +179,7 @@ macro_rules! gpio_macro {
                 impl OutputPin for $PXi<Output<PushPull>> {
                     fn set_high(&mut self) -> Result<(), Self::Error> {
                         let p = unsafe { &*device::Gpio::ptr() };
-                        p.$ctrl_reg().modify(|_, w| unsafe {
+                        p.$ctrl_reg().modify(|_, w| {
                             w.data_reg().set_bit();
                             w.intsts_reg().clear_bit()
                         });
@@ -186,7 +188,7 @@ macro_rules! gpio_macro {
 
                     fn set_low(&mut self) -> Result<(), Self::Error> {
                         let p = unsafe { &*device::Gpio::ptr() };
-                        p.$ctrl_reg().modify(|_, w| unsafe {
+                        p.$ctrl_reg().modify(|_, w| {
                             w.data_reg().clear_bit();
                             w.intsts_reg().clear_bit()
                         });
@@ -216,7 +218,7 @@ macro_rules! gpio_macro {
                 {
                     fn set_high(&mut self) -> Result<(), Self::Error> {
                         let p = unsafe { &*device::Gpio::ptr() };
-                        p.$ctrl_reg().modify(|r, w| unsafe {
+                        p.$ctrl_reg().modify(|_, w| {
                             w.direction_reg().bit(ODM::ACTIVE_HIGH);
                             w.intsts_reg().clear_bit()
                         });
@@ -225,7 +227,7 @@ macro_rules! gpio_macro {
 
                     fn set_low(&mut self) -> Result<(), Self::Error> {
                         let p = unsafe { &*device::Gpio::ptr() };
-                        p.$ctrl_reg().modify(|r, w| unsafe {
+                        p.$ctrl_reg().modify(|_, w| {
                             w.direction_reg().bit(!ODM::ACTIVE_HIGH);
                             w.intsts_reg().clear_bit()
                         });
@@ -309,7 +311,7 @@ macro_rules! gpio_macro {
     };
 }
 
-// GPIO ABCD — register group 0x000–0x01c
+// GPIO ABCD — per-pin control registers 0x180–0x1fc
 gpio_macro!(
     GPIOA, gpioa, 'a', 0,
     [
@@ -366,7 +368,7 @@ gpio_macro!(
     ]
 );
 
-// GPIO EFGH — register group 0x020–0x03c
+// GPIO EFGH — per-pin control registers 0x200–0x27c
 gpio_macro!(
     GPIOE, gpioe, 'e', 0,
     [
@@ -423,7 +425,7 @@ gpio_macro!(
     ]
 );
 
-// GPIO IJKL — register group 0x070–0x0b8
+// GPIO IJKL — per-pin control registers 0x280–0x2fc
 gpio_macro!(
     GPIOI, gpioi, 'i', 0,
     [
@@ -480,7 +482,7 @@ gpio_macro!(
     ]
 );
 
-// GPIO MNOP — register group 0x078–0x108
+// GPIO MNOP — per-pin control registers 0x300–0x37c
 gpio_macro!(
     GPIOM, gpiom, 'm', 0,
     [
@@ -537,7 +539,7 @@ gpio_macro!(
     ]
 );
 
-// GPIO QRST — register group 0x080–0x138
+// GPIO QRST — per-pin control registers 0x380–0x3fc
 gpio_macro!(
     GPIOQ, gpioq, 'q', 0,
     [
@@ -594,7 +596,7 @@ gpio_macro!(
     ]
 );
 
-// GPIO U — register group 0x088–0x168
+// GPIO UVWX — per-pin control registers 0x400–0x47c
 gpio_macro!(
     GPIOU, gpiou, 'u', 0,
     [

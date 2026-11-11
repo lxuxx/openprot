@@ -4,6 +4,7 @@
 #![no_std]
 
 pub mod gpio;
+pub mod gpio_ast1080;
 pub mod hace;
 pub mod i2c;
 pub mod i3c;
