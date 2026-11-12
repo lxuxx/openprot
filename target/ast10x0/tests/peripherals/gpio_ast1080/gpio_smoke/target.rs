@@ -7,7 +7,7 @@
 #![no_main]
 
 use ast10x0_gpio_ast1080::{ActiveLow, GpioExt, gpioa};
-use ast10x0_scu_pinctrl::{ScuRegisters, pinctrl};
+use ast10x0_scu_ast1080_pinctrl::{ScuRegisters, pinctrl};
 use bare_metal::write_all as console_backend_write_all;
 use embedded_hal::digital::{InputPin, OutputPin, StatefulOutputPin};
 

@@ -1,12 +1,13 @@
 # Licensed under the Apache-2.0 license
 # SPDX-License-Identifier: Apache-2.0
 
-load("//target/ast10x0/tests/peripherals/i3c_hci/bare_metal:defs.bzl", "bare_metal_image")
+load("//target/ast10x0/tests/peripherals/ast1080_bare_metal:defs.bzl", "bare_metal_image")
 
 bare_metal_image(
     name = "gpio_smoke",
     extra_deps = [
         "//target/ast10x0/peripherals:gpio_ast1080",
+        "//target/ast10x0/peripherals:scu_ast1080_pinctrl",
         "@rust_crates//:embedded-hal",
     ],
 )
