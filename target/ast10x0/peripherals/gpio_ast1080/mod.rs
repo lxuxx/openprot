@@ -167,7 +167,7 @@ macro_rules! gpio_macro {
                     fn is_set_high(&mut self) -> Result<bool, Self::Error> {
                         let p = unsafe { &*device::Gpio::ptr() };
                         Ok(
-                            p.$ctrl_reg().read().input_data_reg().bit(),
+                            p.$ctrl_reg().read().data_reg().bit(),
                         )
                     }
 

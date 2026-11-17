@@ -1,6 +1,6 @@
 # AST1080 GPIOA smoke test
 
-Build using the shared I3C HCI bare-metal runtime:
+Build using the shared bare-metal runtime:
 
 ```bash
 bazelisk build --platforms=//target/ast10x0 //target/ast10x0/tests/peripherals/gpio_ast1080/gpio_smoke:gpio_smoke
