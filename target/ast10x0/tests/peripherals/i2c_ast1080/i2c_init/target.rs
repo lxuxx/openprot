@@ -1,0 +1,477 @@
+// Licensed under the Apache-2.0 license
+// SPDX-License-Identifier: Apache-2.0
+
+#![no_std]
+#![no_main]
+
+use ast10x0_i2c_ast1080::{
+    Ast1080I2c, Ast1080I2cRegisters, ClockConfig, I2cConfig, I2cError, I2cSpeed, I2cXferMode,
+    init_i2c_global,
+};
+use ast10x0_scu_ast1080_pinctrl::{ScuRegisters, pinctrl};
+use bare_metal::write_all as console_backend_write_all;
+
+const ERR_INIT_FAILED: &str = "i2c controller init failed";
+const ERR_VERIFY_FAILED: &str = "i2c init register verification failed";
+
+struct ExpectedTiming {
+    base_clk_div: u8,
+    scl_low: u8,
+    scl_high: u8,
+    scl_high_min: u8,
+}
+
+fn i2c_error_str(error: I2cError) -> &'static str {
+    match error {
+        I2cError::Overrun => "Overrun",
+        I2cError::NoAcknowledge => "NoAcknowledge",
+        I2cError::Timeout => "Timeout",
+        I2cError::BusRecoveryFailed => "BusRecoveryFailed",
+        I2cError::Bus => "Bus",
+        I2cError::Busy => "Busy",
+        I2cError::Invalid => "Invalid",
+        I2cError::Abnormal => "Abnormal",
+        I2cError::ArbitrationLoss => "ArbitrationLoss",
+        I2cError::SlaveError => "SlaveError",
+        I2cError::InvalidAddress => "InvalidAddress",
+    }
+}
+
+fn expected_timing(speed: I2cSpeed) -> ExpectedTiming {
+    match speed {
+        // ClockConfig::ast1080_default() => base_clk3=2.77MHz, divider ratio=28
+        I2cSpeed::Standard => ExpectedTiming {
+            base_clk_div: 3,
+            scl_low: 14,
+            scl_high: 12,
+            scl_high_min: 11,
+        },
+        // base_clk2=10MHz, divider ratio=25
+        I2cSpeed::Fast => ExpectedTiming {
+            base_clk_div: 2,
+            scl_low: 13,
+            scl_high: 10,
+            scl_high_min: 9,
+        },
+        // base_clk1=20MHz, divider ratio=20
+        I2cSpeed::FastPlus => ExpectedTiming {
+            base_clk_div: 1,
+            scl_low: 10,
+            scl_high: 8,
+            scl_high_min: 7,
+        },
+    }
+}
+
+fn dump_i2c1_registers(name: &str, config: &I2cConfig) {
+    // SAFETY: The test has exclusive ownership of I2C1 during execution.
+    let regs = unsafe { &*ast1080_pac::I2c1::ptr() };
+    let c00 = regs.i2c00().read();
+    let c04 = regs.i2c04().read();
+    let m10 = regs.i2c10().read();
+    let expected = expected_timing(config.speed);
+    let expected_timeout_div: u32 = if config.smbus_timeout { 2 } else { 0 };
+    let expected_timeout_timer: u32 = if config.smbus_timeout { 8 } else { 0 };
+
+    bare_metal::error!("--- {} mode I2C1 register dump ---", name as &str);
+    bare_metal::error!("i2c00(raw)=0x{:08x}", c00.bits() as u32);
+    bare_metal::error!("i2c04(raw)=0x{:08x}", c04.bits() as u32);
+    bare_metal::error!("i2c10(raw)=0x{:08x}", m10.bits() as u32);
+
+    bare_metal::error!(
+        "decoded: master_en={} auto_release={} dis_multimaster={} (expected={})",
+        c00.msten().bit() as u8,
+        c00.autorelease().bit() as u8,
+        c00.multimstdis().bit() as u8,
+        (!config.multi_master) as u8
+    );
+
+    bare_metal::error!(
+        "decoded: base_clk_div={} (expected={}) scl_low={} (expected={})",
+        c04.actimebase().bits() as u32,
+        expected.base_clk_div as u32,
+        c04.tcklow().bits() as u32,
+        expected.scl_low as u32
+    );
+
+    bare_metal::error!(
+        "decoded: scl_high={} (expected={}) scl_high_min={} (expected={})",
+        c04.tckhigh().bits() as u32,
+        expected.scl_high as u32,
+        c04.tckhighmin().bits() as u32,
+        expected.scl_high_min as u32
+    );
+
+    bare_metal::error!(
+        "decoded: timeout_div={} (expected={}) timeout_timer={} (expected={})",
+        c04.timeoutbase().bits() as u32,
+        expected_timeout_div as u32,
+        c04.ttimeout().bits() as u32,
+        expected_timeout_timer as u32
+    );
+
+    bare_metal::error!(
+        "decoded: pkt_done_int={} bus_recover_int={} smbus_alert_int={} (expected={})",
+        (m10.bits() & (1 << 16) != 0) as u8,
+        (m10.bits() & (1 << 13) != 0) as u8,
+        (m10.bits() & (1 << 12) != 0) as u8,
+        config.smbus_alert as u8
+    );
+}
+
+fn verify_init_registers(name: &str, config: &I2cConfig) -> Result<(), &'static str> {
+    // SAFETY: The test has exclusive ownership of I2C1 during execution.
+    let regs = unsafe { &*ast1080_pac::I2c1::ptr() };
+
+    let c00 = regs.i2c00().read();
+    let c04 = regs.i2c04().read();
+    let m10 = regs.i2c10().read();
+    let expected = expected_timing(config.speed);
+
+    let mut ok = true;
+
+    let master_en = c00.msten().bit();
+    if !master_en {
+        bare_metal::error!("{} verify: msten not set", name as &str);
+        ok = false;
+    }
+
+    let auto_release = c00.autorelease().bit();
+    if !auto_release {
+        bare_metal::error!("{} verify: bus auto-release not set", name as &str);
+        ok = false;
+    }
+
+    let dis_multimaster = c00.multimstdis().bit();
+    let expected_dis_multimaster = !config.multi_master;
+    if dis_multimaster != expected_dis_multimaster {
+        bare_metal::error!(
+            "{} verify: dis_multimaster mismatch actual={} expected={}",
+            name as &str,
+            dis_multimaster as u8,
+            expected_dis_multimaster as u8
+        );
+        ok = false;
+    }
+
+    let base_clk_div = c04.actimebase().bits();
+    if base_clk_div != expected.base_clk_div {
+        bare_metal::error!(
+            "{} verify: base_clk_div mismatch actual={} expected={}",
+            name as &str,
+            base_clk_div as u32,
+            expected.base_clk_div as u32
+        );
+        ok = false;
+    }
+
+    let scl_low = c04.tcklow().bits();
+    if scl_low != expected.scl_low {
+        bare_metal::error!(
+            "{} verify: scl_low mismatch actual={} expected={}",
+            name as &str,
+            scl_low as u32,
+            expected.scl_low as u32
+        );
+        ok = false;
+    }
+
+    let scl_high = c04.tckhigh().bits();
+    if scl_high != expected.scl_high {
+        bare_metal::error!(
+            "{} verify: scl_high mismatch actual={} expected={}",
+            name as &str,
+            scl_high as u32,
+            expected.scl_high as u32
+        );
+        ok = false;
+    }
+
+    let scl_high_min = c04.tckhighmin().bits();
+    if scl_high_min != expected.scl_high_min {
+        bare_metal::error!(
+            "{} verify: scl_high_min mismatch actual={} expected={}",
+            name as &str,
+            scl_high_min as u32,
+            expected.scl_high_min as u32
+        );
+        ok = false;
+    }
+
+    let timeout_div = c04.timeoutbase().bits();
+    let expected_timeout_div = if config.smbus_timeout { 2 } else { 0 };
+    if timeout_div != expected_timeout_div {
+        bare_metal::error!(
+            "{} verify: timeout_div mismatch actual={} expected={}",
+            name as &str,
+            timeout_div as u32,
+            expected_timeout_div as u32
+        );
+        ok = false;
+    }
+
+    let timeout_timer = c04.ttimeout().bits();
+    let expected_timeout_timer = if config.smbus_timeout { 8 } else { 0 };
+    if timeout_timer != expected_timeout_timer {
+        bare_metal::error!(
+            "{} verify: timeout_timer mismatch actual={} expected={}",
+            name as &str,
+            timeout_timer as u32,
+            expected_timeout_timer as u32
+        );
+        ok = false;
+    }
+
+    let pkt_done_int = m10.bits() & (1 << 16) != 0;
+    if !pkt_done_int {
+        bare_metal::error!("{} verify: pkt_cmd_done_int not enabled", name as &str);
+        ok = false;
+    }
+
+    let bus_recover_int = m10.bits() & (1 << 13) != 0;
+    if !bus_recover_int {
+        bare_metal::error!("{} verify: bus_recover_done_int not enabled", name as &str);
+        ok = false;
+    }
+
+    let smbus_alert_int = m10.bits() & (1 << 12) != 0;
+    if smbus_alert_int != config.smbus_alert {
+        bare_metal::error!(
+            "{} verify: smbus_alert_int mismatch actual={} expected={}",
+            name as &str,
+            smbus_alert_int as u8,
+            config.smbus_alert as u8
+        );
+        ok = false;
+    }
+
+    if ok {
+        Ok(())
+    } else {
+        bare_metal::error!("--- {} mode I2C1 register dump ---", name as &str);
+        bare_metal::error!("i2c00(raw)=0x{:08x}", c00.bits() as u32);
+        bare_metal::error!("i2c04(raw)=0x{:08x}", c04.bits() as u32);
+        bare_metal::error!("i2c10(raw)=0x{:08x}", m10.bits() as u32);
+
+        bare_metal::error!(
+            "decoded: master_en={} auto_release={} dis_multimaster={} (expected={})",
+            c00.msten().bit() as u8,
+            c00.autorelease().bit() as u8,
+            c00.multimstdis().bit() as u8,
+            (!config.multi_master) as u8
+        );
+
+        bare_metal::error!(
+            "decoded: base_clk_div={} (expected={}) scl_low={} (expected={})",
+            c04.actimebase().bits() as u32,
+            expected.base_clk_div as u32,
+            c04.tcklow().bits() as u32,
+            expected.scl_low as u32
+        );
+
+        bare_metal::error!(
+            "decoded: scl_high={} (expected={}) scl_high_min={} (expected={})",
+            c04.tckhigh().bits() as u32,
+            expected.scl_high as u32,
+            c04.tckhighmin().bits() as u32,
+            expected.scl_high_min as u32
+        );
+
+        bare_metal::error!(
+            "decoded: timeout_div={} (expected={}) timeout_timer={} (expected={})",
+            c04.timeoutbase().bits() as u32,
+            expected_timeout_div as u32,
+            c04.ttimeout().bits() as u32,
+            expected_timeout_timer as u32
+        );
+
+        bare_metal::error!(
+            "decoded: pkt_done_int={} bus_recover_int={} smbus_alert_int={} (expected={})",
+            (m10.bits() & (1 << 16) != 0) as u8,
+            (m10.bits() & (1 << 13) != 0) as u8,
+            (m10.bits() & (1 << 12) != 0) as u8,
+            config.smbus_alert as u8
+        );
+        Err(ERR_VERIFY_FAILED)
+    }
+}
+
+/// Prepare the shared I2C block once; no other I2C bus may be active.
+/// The loader must configure a 50 MHz I2C APB clock.
+fn prepare_i2c() -> Result<(), &'static str> {
+    // SAFETY: this standalone test owns SCU and the entire I2C block.
+    let scu = unsafe { ScuRegisters::new_global_unlocked() };
+    scu.apply_pinctrl_group(pinctrl::PINCTRL_I2C1);
+    const I2C_MASK: u32 = 1 << 15;
+    let regs = scu.regs();
+    // AST1080 clock-stop set/clear and reset set/clear registers.
+    regs.scu240().write(|w| unsafe { w.bits(I2C_MASK) });
+    spin_delay();
+    regs.scu220().write(|w| unsafe { w.bits(I2C_MASK) });
+    spin_delay();
+    regs.scu224().write(|w| unsafe { w.bits(I2C_MASK) });
+    spin_delay();
+    regs.scu244().write(|w| unsafe { w.bits(I2C_MASK) });
+    spin_delay();
+
+    if regs.scu220().read().scureseti2c().bit() || regs.scu240().read().scuclkstopi2c().bit() {
+        return Err("I2C reset or clock enable failed");
+    }
+
+    // SAFETY: clocks and reset are configured; this is the only invocation.
+    unsafe { init_i2c_global() };
+    // SAFETY: the test exclusively owns the global registers.
+    let global = unsafe { &*ast1080_pac::I2cglobal::ptr() };
+    let control = global.i2cglobal00c().read();
+    if !control.clkdivsel().bit()
+        || !control.newregmode().bit()
+        || !control.srxmode().bit()
+        || global.i2cglobal010().read().bits() != 0x6222_0803
+    {
+        bare_metal::error!(
+            "I2C global init mismatch: control=0x{:08x} divider=0x{:08x}",
+            control.bits(),
+            global.i2cglobal010().read().bits()
+        );
+        return Err("I2C global register verification failed");
+    }
+    Ok(())
+}
+
+/// Bounded settling delay; iterations are not calibrated microseconds.
+fn spin_delay() {
+    for _ in 0..100_000 {
+        core::hint::spin_loop();
+    }
+}
+
+fn run_i2c_init_smoke_test() -> Result<(), &'static str> {
+    bare_metal::info!("=== AST1080 I2C init smoke test ===");
+
+    prepare_i2c()?;
+    bare_metal::info!("Board-level I2C global init complete");
+
+    run_init_case(
+        "standard",
+        I2cConfig {
+            speed: I2cSpeed::Standard,
+            xfer_mode: I2cXferMode::BufferMode,
+            multi_master: true,
+            smbus_timeout: true,
+            smbus_alert: false,
+            clock_config: ClockConfig::ast1080_default(),
+        },
+    )?;
+    run_init_case(
+        "fast",
+        I2cConfig {
+            speed: I2cSpeed::Fast,
+            xfer_mode: I2cXferMode::BufferMode,
+            multi_master: true,
+            smbus_timeout: true,
+            smbus_alert: false,
+            clock_config: ClockConfig::ast1080_default(),
+        },
+    )?;
+    run_init_case(
+        "fast-plus",
+        I2cConfig {
+            speed: I2cSpeed::FastPlus,
+            xfer_mode: I2cXferMode::BufferMode,
+            multi_master: false,
+            smbus_timeout: true,
+            smbus_alert: false,
+            clock_config: ClockConfig::ast1080_default(),
+        },
+    )?;
+    run_init_case_dma(
+        "dma-fast",
+        I2cConfig {
+            speed: I2cSpeed::Fast,
+            xfer_mode: I2cXferMode::DmaMode,
+            multi_master: true,
+            smbus_timeout: true,
+            smbus_alert: false,
+            clock_config: ClockConfig::ast1080_default(),
+        },
+    )?;
+
+    bare_metal::info!("=== AST1080 I2C init smoke test complete ===");
+    Ok(())
+}
+
+fn run_init_case(name: &str, config: I2cConfig) -> Result<(), &'static str> {
+    bare_metal::info!("Instantiating controller 1 in {} mode", name as &str);
+
+    // SAFETY: single MMIO-pointer perimeter — the test owns I2C1 for the process lifetime.
+    let result = unsafe {
+        let mmio = Ast1080I2cRegisters::new(ast1080_pac::I2c1::ptr(), ast1080_pac::I2cbuff1::ptr());
+        Ast1080I2c::new(mmio, &config, |_| core::hint::spin_loop())
+    };
+
+    match result {
+        Ok(_i2c) => {
+            verify_init_registers(name, &config)?;
+            bare_metal::info!("{} mode init+verify passed", name as &str);
+            Ok(())
+        }
+        Err(error) => {
+            let error_name = i2c_error_str(error);
+            bare_metal::error!("{} mode init failed: {}", name as &str, error_name as &str);
+            dump_i2c1_registers(name, &config);
+            Err(ERR_INIT_FAILED)
+        }
+    }
+}
+
+fn run_init_case_dma(name: &str, config: I2cConfig) -> Result<(), &'static str> {
+    bare_metal::info!(
+        "Instantiating controller 1 in {} mode (new_with_dma)",
+        name as &str
+    );
+
+    // Constructor-only case: no DMA command is issued with these stack buffers.
+    let mut master_dma_buf = [0u8; 64];
+    let mut slave_dma_buf = [0u8; 64];
+
+    // SAFETY: single MMIO-pointer perimeter — the test owns I2C1 for the process lifetime.
+    let result = unsafe {
+        let mmio = Ast1080I2cRegisters::new(ast1080_pac::I2c1::ptr(), ast1080_pac::I2cbuff1::ptr());
+        Ast1080I2c::new_with_dma(
+            mmio,
+            &config,
+            &mut master_dma_buf,
+            &mut slave_dma_buf,
+            |_| core::hint::spin_loop(),
+        )
+    };
+
+    match result {
+        Ok(_i2c) => {
+            verify_init_registers(name, &config)?;
+            bare_metal::info!("{} mode init+verify passed", name as &str);
+            Ok(())
+        }
+        Err(error) => {
+            let error_name = i2c_error_str(error);
+            bare_metal::error!("{} mode init failed: {}", name as &str, error_name as &str);
+            dump_i2c1_registers(name, &config);
+            Err(ERR_INIT_FAILED)
+        }
+    }
+}
+
+#[unsafe(no_mangle)]
+pub extern "C" fn test_main() -> ! {
+    let sentinel: &[u8] = match run_i2c_init_smoke_test() {
+        Ok(()) => b"TEST_RESULT:PASS\n",
+        Err(error) => {
+            bare_metal::error!("I2C init smoke test failed: {}", error);
+            b"TEST_RESULT:FAIL\n"
+        }
+    };
+    console_backend_write_all(sentinel);
+    loop {
+        core::hint::spin_loop();
+    }
+}
