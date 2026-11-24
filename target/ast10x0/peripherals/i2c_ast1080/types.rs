@@ -5,6 +5,7 @@
 //!
 //! These types are portable and have no OS dependencies.
 
+use super::global::DEFAULT_I2C_CLOCK_DIVIDERS;
 use ast1080_pac;
 
 /// I2C controller identifier (0-13 for AST1080)
@@ -62,7 +63,7 @@ impl TryFrom<u8> for Controller {
 
 /// Clock configuration for I2C timing calculations
 ///
-/// This struct decouples the I2C driver from direct SCU/I2C global register access,
+/// This struct supplies the APB frequency and a snapshot of the base clocks,
 /// enabling:
 /// - Unit testing without hardware
 /// - Portability across different board configurations
@@ -82,78 +83,49 @@ impl TryFrom<u8> for Controller {
 /// let clocks = ClockConfig::ast1080_default();
 ///
 /// // Or read from hardware during system init
-/// let clocks = ClockConfig::ast1080_default();
+/// let clocks = ClockConfig::from_hardware(50_000_000);
 /// ```
 #[derive(Debug, Clone, Copy)]
 pub struct ClockConfig {
     /// APB bus clock frequency in Hz
     pub apb_clock_hz: u32,
-    /// Base clock 1 frequency in Hz (for Fast-plus mode, ~20 `MHz`)
+    /// Base clock 1 frequency in Hz
     pub base_clk1_hz: u32,
-    /// Base clock 2 frequency in Hz (for Fast mode, ~10 `MHz`)
+    /// Base clock 2 frequency in Hz
     pub base_clk2_hz: u32,
-    /// Base clock 3 frequency in Hz (for Standard mode, ~2.77 `MHz`)
+    /// Base clock 3 frequency in Hz
     pub base_clk3_hz: u32,
     /// Base clock 4 frequency in Hz (for recovery timeout)
     pub base_clk4_hz: u32,
 }
 
 impl ClockConfig {
-    /// Default AST1080 clock configuration
-    ///
-    /// Static configuration for boards configured with:
-    /// - APB clock: 50 `MHz`
-    /// - I2CG10 register: `0x6222_0803`
-    ///
-    /// This can be used when the actual hardware configuration matches
-    /// these defaults, or for testing purposes.
+    /// Static clocks for a board with 50 MHz APB and the default global dividers.
     #[must_use]
     pub const fn ast1080_default() -> Self {
-        // Requires a board-supplied 50 MHz APB clock.
-        // I2CG10 = 0x6222_0803:
-        //   base_clk1 divisor = 0x03 → 50M / ((3+2)/2) = 20 MHz
-        //   base_clk2 divisor = 0x08 → 50M / ((8+2)/2) = 10 MHz
-        //   base_clk3 divisor = 0x22 → 50M / ((34+2)/2) = 2.77 MHz
-        //   base_clk4 divisor = 0x62 → 50M / ((98+2)/2) = 1 MHz
+        Self::from_dividers(50_000_000, DEFAULT_I2C_CLOCK_DIVIDERS)
+    }
+
+    /// Decode AST1080 base clocks: APB / (divider + 1).
+    #[must_use]
+    pub const fn from_dividers(apb_clock_hz: u32, dividers: u32) -> Self {
         Self {
-            apb_clock_hz: 50_000_000,
-            base_clk1_hz: 20_000_000,
-            base_clk2_hz: 10_000_000,
-            base_clk3_hz: 2_770_000,
-            base_clk4_hz: 1_000_000,
+            apb_clock_hz,
+            base_clk1_hz: apb_clock_hz / ((dividers & 0xff) + 1),
+            base_clk2_hz: apb_clock_hz / (((dividers >> 8) & 0xff) + 1),
+            base_clk3_hz: apb_clock_hz / (((dividers >> 16) & 0xff) + 1),
+            base_clk4_hz: apb_clock_hz / (((dividers >> 24) & 0xff) + 1),
         }
     }
 
-    /// Read clock configuration from hardware registers
+    /// Read the global dividers using the board-supplied APB frequency.
     ///
-    /// Reads I2C base-clock dividers using the APB frequency supplied by
-    /// the board. No AST1060 SCU clock assumptions are made.
-    ///
-    /// # Safety
-    ///
-    /// This function accesses I2C global registers. It should be
-    /// called during system initialization when these peripherals are
-    /// properly configured.
+    /// Call during initialization with the I2C clock enabled and global
+    /// dividers configured. This does not read or configure SCU clocks.
     #[must_use]
     pub fn from_hardware(apb_clock_hz: u32) -> Self {
-        // The board supplies the APB clock; AST1080 SCU differs from AST1060.
-        // Read base clock dividers from I2C global registers
         let i2cg = unsafe { &*ast1080_pac::I2cglobal::ptr() };
-        let i2cglobal010 = i2cg.i2cglobal010().read();
-
-        // Formula: base_clk = APB * 10 / ((divisor + 2) * 10 / 2)
-        let calc_base = |divisor: u8| -> u32 {
-            let divisor_u32 = u32::from(divisor);
-            (u64::from(apb_clock_hz) * 2 / u64::from(divisor_u32 + 2)) as u32
-        };
-
-        Self {
-            apb_clock_hz,
-            base_clk1_hz: calc_base(i2cglobal010.basediv1().bits()),
-            base_clk2_hz: calc_base(i2cglobal010.basediv2().bits()),
-            base_clk3_hz: calc_base(i2cglobal010.basediv3().bits()),
-            base_clk4_hz: calc_base(i2cglobal010.basediv4().bits()),
-        }
+        Self::from_dividers(apb_clock_hz, i2cg.i2cglobal010().read().bits())
     }
 }
 
@@ -178,7 +150,8 @@ pub struct I2cConfig {
     pub speed: I2cSpeed,
     /// Enable multi-master support
     pub multi_master: bool,
-    /// Enable `SMBus` timeout detection (25-35ms per `SMBus` spec)
+    /// Enable master/slave timeout counters (count 8, timeout base selector 3).
+    /// The resulting duration depends on the board clock configuration.
     pub smbus_timeout: bool,
     /// Enable `SMBus` alert interrupt
     pub smbus_alert: bool,

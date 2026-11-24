@@ -17,7 +17,7 @@ Outputs are `i2c_init.elf` and `i2c_init.bin` under
 The test selects `PINCTRL_I2C1`, resets the shared I2C block using
 SCU220/224 bit 15, enables its clock using SCU240/244 bit 15, and calls
 `init_i2c_global()` once. It verifies reset release, clock enable, global
-control, and the `0x6222_0803` clock-divider configuration.
+control, and the `0xC622_0904` clock-divider configuration.
 
 For Standard, Fast, Fast-plus, and DMA-fast modes, it constructs
 `Ast1080I2c` and checks I2C00, I2C04, and I2C10 for master enable,

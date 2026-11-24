@@ -24,21 +24,14 @@
 //! - `srxmode`: RX buffer empty action
 //!
 //! ## I2CG10 - I2C Global Clock Divider Register
-//! Value: `0x6222_0803`
-//! - Bits [31:24] = 0x62: Base clk4 for auto recovery timeout
-//! - Bits [23:16] = 0x22: Base clk3 for Standard-mode (100kHz), tBuf=5.76us
-//! - Bits [15:8]  = 0x08: Base clk2 for Fast-mode (400kHz), tBuf=1.6us
-//! - Bits [7:0]   = 0x03: Base clk1 for Fast-mode Plus (1MHz), tBuf=0.8us
-//!
-//! Based on APB clock = 50MHz:
-//! ```text
-//! div  : scl       : baseclk [APB/((div/2) + 1)] : tBuf [1/bclk * 16]
-//! 0x03 : 1MHz      : 20MHz                       : 0.8us  (Fast-mode Plus)
-//! 0x08 : 400kHz    : 10MHz                       : 1.6us  (Fast-mode)
-//! 0x22 : 99.21kHz  : 2.77MHz                     : 5.76us (Standard-mode)
-//! ```
+//! The default is 0xC622_0904. Each base clock is APB / (divider + 1).
+//! At 50 MHz APB the four clocks are 10 MHz, 5 MHz, approximately
+//! 1.429 MHz, and approximately 251.256 kHz. Board clock setup must match.
 
 use ast1080_pac;
+
+/// Shared default for global initialization and static clock configuration.
+pub const DEFAULT_I2C_CLOCK_DIVIDERS: u32 = 0xC622_0904;
 
 /// Configure I2C global registers (one-time init, after SCU setup).
 ///
@@ -53,11 +46,9 @@ pub unsafe fn init_i2c_global() {
     i2cg.i2cglobal00c()
         .write(|w| w.clkdivsel().set_bit().srxmode().set_bit());
 
-    // Set base clock dividers for different speeds
-    // APB clk: 50MHz
-    // I2CG10[31:24] = 0xC6: base clk4 for i2c auto recovery timeout counter
-    // I2CG10[23:16] = 0x22: base clk3 for Standard-mode (100kHz) min tBuf 4.7us
-    // I2CG10[15:8]  = 0x09: base clk2 for Fast-mode (400kHz) min tBuf 1.3us
-    // I2CG10[7:0]   = 0x04: base clk1 for Fast-mode Plus (1MHz) min tBuf 0.5us
-    unsafe { i2cg.i2cglobal010().write(|w| w.bits(0xC622_0904)) };
+    // Keep static ClockConfig defaults synchronized with this register value.
+    unsafe {
+        i2cg.i2cglobal010()
+            .write(|w| w.bits(DEFAULT_I2C_CLOCK_DIVIDERS))
+    };
 }

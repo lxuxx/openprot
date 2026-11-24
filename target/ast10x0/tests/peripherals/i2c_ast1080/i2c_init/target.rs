@@ -38,27 +38,25 @@ fn i2c_error_str(error: I2cError) -> &'static str {
 }
 
 fn expected_timing(speed: I2cSpeed) -> ExpectedTiming {
+    // 50 MHz APB with global divider register 0xC622_0904.
     match speed {
-        // ClockConfig::ast1080_default() => base_clk3=2.77MHz, divider ratio=28
         I2cSpeed::Standard => ExpectedTiming {
-            base_clk_div: 3,
-            scl_low: 14,
-            scl_high: 12,
-            scl_high_min: 11,
+            base_clk_div: 34,
+            scl_low: 7,
+            scl_high: 6,
+            scl_high_min: 5,
         },
-        // base_clk2=10MHz, divider ratio=25
         I2cSpeed::Fast => ExpectedTiming {
-            base_clk_div: 2,
+            base_clk_div: 4,
             scl_low: 13,
             scl_high: 10,
             scl_high_min: 9,
         },
-        // base_clk1=20MHz, divider ratio=20
         I2cSpeed::FastPlus => ExpectedTiming {
-            base_clk_div: 1,
-            scl_low: 10,
-            scl_high: 8,
-            scl_high_min: 7,
+            base_clk_div: 4,
+            scl_low: 4,
+            scl_high: 4,
+            scl_high_min: 3,
         },
     }
 }
@@ -70,8 +68,8 @@ fn dump_i2c1_registers(name: &str, config: &I2cConfig) {
     let c04 = regs.i2c04().read();
     let m10 = regs.i2c10().read();
     let expected = expected_timing(config.speed);
-    let expected_timeout_div: u32 = if config.smbus_timeout { 2 } else { 0 };
-    let expected_timeout_timer: u32 = if config.smbus_timeout { 8 } else { 0 };
+    let expected_timeout_div: u32 = if config.smbus_timeout { 3 } else { 0 };
+    let expected_timeout_timer: u32 = 0;
 
     bare_metal::error!("--- {} mode I2C1 register dump ---", name as &str);
     bare_metal::error!("i2c00(raw)=0x{:08x}", c00.bits() as u32);
@@ -129,6 +127,12 @@ fn verify_init_registers(name: &str, config: &I2cConfig) -> Result<(), &'static 
     let expected = expected_timing(config.speed);
 
     let mut ok = true;
+    let timeout = regs.i2c74().read();
+    let count = if config.smbus_timeout { 1 } else { 0 };
+    if timeout.mtimeout().bits() != count || timeout.stimeout().bits() != count {
+        bare_metal::error!("I2C74 timeout counts mismatch: 0x{:08x}", timeout.bits());
+        ok = false;
+    }
 
     let master_en = c00.msten().bit();
     if !master_en {
@@ -199,7 +203,7 @@ fn verify_init_registers(name: &str, config: &I2cConfig) -> Result<(), &'static 
     }
 
     let timeout_div = c04.timeoutbase().bits();
-    let expected_timeout_div = if config.smbus_timeout { 2 } else { 0 };
+    let expected_timeout_div = if config.smbus_timeout { 3 } else { 0 };
     if timeout_div != expected_timeout_div {
         bare_metal::error!(
             "{} verify: timeout_div mismatch actual={} expected={}",
@@ -211,7 +215,7 @@ fn verify_init_registers(name: &str, config: &I2cConfig) -> Result<(), &'static 
     }
 
     let timeout_timer = c04.ttimeout().bits();
-    let expected_timeout_timer = if config.smbus_timeout { 8 } else { 0 };
+    let expected_timeout_timer = 0;
     if timeout_timer != expected_timeout_timer {
         bare_metal::error!(
             "{} verify: timeout_timer mismatch actual={} expected={}",
@@ -326,7 +330,7 @@ fn prepare_i2c() -> Result<(), &'static str> {
     if !control.clkdivsel().bit()
         || !control.newregmode().bit()
         || !control.srxmode().bit()
-        || global.i2cglobal010().read().bits() != 0x6222_0803
+        || global.i2cglobal010().read().bits() != 0xC622_0904
     {
         bare_metal::error!(
             "I2C global init mismatch: control=0x{:08x} divider=0x{:08x}",

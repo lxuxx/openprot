@@ -702,6 +702,16 @@ paste! {
     gen_pin_pairs!(SCU460, 0x460, 31);
 }
 
+/// I2C0 pin group: SCL0/SDA0 mux selection on SCU408[2:0]/SCU408[6:4].
+pub const PINCTRL_I2C0: &[PinctrlPin] = &[
+    CLR_PIN_SCU408_2,
+    CLR_PIN_SCU408_1,
+    PIN_SCU408_0,
+    CLR_PIN_SCU408_6,
+    CLR_PIN_SCU408_5,
+    PIN_SCU408_4,
+];
+
 /// I2C1 pin group: SCL1/SDA1 mux selection on SCU408[10:8]/SCU408[14:12].
 pub const PINCTRL_I2C1: &[PinctrlPin] = &[CLR_PIN_SCU408_10, CLR_PIN_SCU408_9, PIN_SCU408_8, CLR_PIN_SCU408_14, CLR_PIN_SCU408_13, PIN_SCU408_12];
 
