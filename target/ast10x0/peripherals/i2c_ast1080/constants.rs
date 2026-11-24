@@ -175,6 +175,8 @@ pub const AST_I2CS_PKT_ERROR: u32 = 1 << 17;
 pub const AST_I2CS_WAIT_TX_DMA: u32 = 1 << 25;
 /// Waiting for RX DMA
 pub const AST_I2CS_WAIT_RX_DMA: u32 = 1 << 24;
+/// Use DMA Mode
+pub const AST_I2CC_USE_DMA_MODE: u32 = 1 << 2;
 
 /// Helper to build packet mode address field
 #[inline]

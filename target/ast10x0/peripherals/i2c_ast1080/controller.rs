@@ -84,7 +84,8 @@ impl<'a, Y: FnMut(u32)> Ast1080I2c<'a, Y> {
     /// hardware is already configured — I2C global registers (I2CG0C,
     /// I2CG10) set (call [`super::global::init_i2c_global`] ONCE in the app
     /// before use); controller enabled (I2CC00); timing configured; pin mux
-    /// configured.
+    /// configured. I2C94 mode selection must match config.xfer_mode, and
+    /// buffer mode must have its master/slave TX/RX offsets initialized.
     #[must_use]
     pub fn from_initialized(mmio: Ast1080I2cRegisters, config: &I2cConfig, yield_ns: Y) -> Self {
         Self {
@@ -175,11 +176,29 @@ impl<'a, Y: FnMut(u32)> Ast1080I2c<'a, Y> {
         // PRECONDITION: I2C global registers must be initialized by app before use.
         // See: super::global::init_i2c_global().
 
+        // AST1080 uses I2C94 bit 2 to select system-memory DMA versus the
+        // internal buffer. Preserve all other version-control bits.
         if self.xfer_mode == I2cXferMode::DmaMode {
-            self.regs().i2c094().modify(|_, w| w.enbl_dma().set_bit());
+            self.regs()
+                .i2c94()
+                .modify(|r, w| unsafe { w.bits(r.bits() | constants::AST_I2CC_USE_DMA_MODE) });
         } else {
-            self.regs().i2c094().modify(|_, w| w.enbl_dma().clear_bit());
+            if self.xfer_mode == I2cXferMode::BufferMode {
+                let regs = self.regs();
+                regs.i2c30().write(|w| unsafe { w.bits(0x00) });
+                regs.i2c60().write(|w| unsafe { w.bits(0) });
+                regs.i2c34().write(|w| unsafe { w.bits(0x10) });
+                regs.i2c64().write(|w| unsafe { w.bits(0) });
+                regs.i2c38().write(|w| unsafe { w.bits(0x20) });
+                regs.i2c68().write(|w| unsafe { w.bits(0) });
+                regs.i2c3c().write(|w| unsafe { w.bits(0x30) });
+                regs.i2c6c().write(|w| unsafe { w.bits(0) });
+            }
+            self.regs()
+                .i2c94()
+                .modify(|r, w| unsafe { w.bits(r.bits() & !constants::AST_I2CC_USE_DMA_MODE) });
         }
+
         // Reset I2C controller
         unsafe {
             self.regs().i2c00().write(|w| w.bits(0));

@@ -7,6 +7,7 @@ pub mod gpio;
 pub mod gpio_ast1080;
 pub mod hace;
 pub mod i2c;
+pub mod i2c_ast1080;
 pub mod i3c;
 pub mod i3c_hci;
 pub mod otp;
